@@ -88,6 +88,7 @@ AccelSensor::AccelSensor()
 	: SensorBase(NULL, "accelerometer"),
 	  mInputReader(4),
 	  mHasPendingEvent(false),
+	  mAbsEventReceived(false),
 	  mEnabledTime(0)
 {
 	mPendingEvent.version = sizeof(sensors_event_t);
@@ -109,6 +110,7 @@ AccelSensor::AccelSensor(char *name)
 	: SensorBase(NULL, "accelerometer"),
 	  mInputReader(4),
 	  mHasPendingEvent(false),
+	  mAbsEventReceived(false),
 	  mEnabledTime(0)
 {
 	mPendingEvent.version = sizeof(sensors_event_t);
@@ -132,6 +134,7 @@ AccelSensor::AccelSensor(SensorContext *context)
 	: SensorBase(NULL, NULL, context),
 	  mInputReader(4),
 	  mHasPendingEvent(false),
+	  mAbsEventReceived(false),
 	  mEnabledTime(0)
 {
 	mPendingEvent.version = sizeof(sensors_event_t);
@@ -163,6 +166,7 @@ int AccelSensor::enable(int32_t, int en) {
 	if (strcmp(propBuf, "1") == 0) {
 		ALOGE("sensors.accel.loopback is set");
 		mEnabled = flags;
+		mEnabledTime = 0;
 		return 0;
 	}
 
@@ -183,6 +187,7 @@ int AccelSensor::enable(int32_t, int en) {
 			if (flags) {
 				buf[0] = '1';
 				mEnabledTime = getTimestamp() + IGNORE_EVENT_TIME;
+				sysclk_sync_offset = getClkOffset();
 			} else {
 				buf[0] = '0';
 			}
@@ -257,7 +262,7 @@ again:
 		int type = event->type;
 		if (type == EV_ABS) {
 			float value = event->value;
-
+			mAbsEventReceived = true;
 			if (event->code == EVENT_TYPE_ACCEL_X) {
 				mPendingEvent.data[0] = offset_x + value * CONVERT_ACCEL_X;
 			} else if (event->code == EVENT_TYPE_ACCEL_Y) {
@@ -284,11 +289,10 @@ again:
 						if(mUseAbsTimeStamp != true) {
 							mPendingEvent.timestamp = timevalToNano(event->time);
 						}
-						if (mEnabled) {
-							if(mPendingEvent.timestamp >= mEnabledTime) {
-								*data++ = mPendingEvent;
-								numEventReceived++;
-							}
+						mPendingEvent.timestamp -= sysclk_sync_offset;
+						if (mEnabled && mAbsEventReceived) {
+							*data++ = mPendingEvent;
+							numEventReceived++;
 							count--;
 						}
 					}

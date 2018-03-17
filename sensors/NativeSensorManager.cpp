@@ -1,5 +1,5 @@
 /*--------------------------------------------------------------------------
-Copyright (c) 2014, The Linux Foundation. All rights reserved.
+Copyright (c) 2014 - 2016, The Linux Foundation. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are
@@ -37,6 +37,7 @@ IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "NativeSensorManager.h"
+#include <unistd.h>
 
 ANDROID_SINGLETON_STATIC_INSTANCE(NativeSensorManager);
 
@@ -44,6 +45,7 @@ enum {
 	ORIENTATION = 0,
 	PSEUDO_GYROSCOPE,
 	ROTATION_VECTOR,
+	GAME_ROTATION_VECTOR,
 	LINEAR_ACCELERATION,
 	GRAVITY,
 	POCKET,
@@ -101,6 +103,27 @@ const struct sensor_t NativeSensorManager::virtualSensorList [VIRTUAL_SENSOR_COU
 		.version = 1,
 		.handle = '_dmy',
 		.type = SENSOR_TYPE_ROTATION_VECTOR,
+		.maxRange = 1,
+		.resolution = 1.0f / (1<<24),
+		.power = 1,
+		.minDelay = 10000,
+		.fifoReservedEventCount = 0,
+		.fifoMaxEventCount = 0,
+#if defined(SENSORS_DEVICE_API_VERSION_1_3)
+		.stringType = NULL,
+		.requiredPermission = NULL,
+		.maxDelay = 0,
+		.flags = SENSOR_FLAG_CONTINUOUS_MODE,
+#endif
+		.reserved = {},
+	},
+
+	[GAME_ROTATION_VECTOR] = {
+		.name = "qti-game-rotation-vector",
+		.vendor = "QTI",
+		.version = 1,
+		.handle = '_dmy',
+		.type = SENSOR_TYPE_GAME_ROTATION_VECTOR,
 		.maxRange = 1,
 		.resolution = 1.0f / (1<<24),
 		.power = 1,
@@ -311,19 +334,23 @@ NativeSensorManager::~NativeSensorManager()
 			delete context[i].driver;
 		}
 
-		list_for_each_safe(node, n, &context[i].listener) {
-			item = node_to_item(node, struct SensorRefMap, list);
-			if (item != NULL) {
-				list_remove(&item->list);
-				delete item;
+		if (!list_empty(&(context[i].listener))) {
+			list_for_each_safe(node, n, &context[i].listener) {
+				item = node_to_item(node, struct SensorRefMap, list);
+				if (item != NULL) {
+					list_remove(&item->list);
+					delete item;
+				}
 			}
 		}
 
-		list_for_each_safe(node, n, &context[i].dep_list) {
-			item = node_to_item(node, struct SensorRefMap, list);
-			if (item != NULL) {
-				list_remove(&item->list);
-				delete item;
+		if (!list_empty(&(context[i].dep_list))) {
+			list_for_each_safe(node, n, &context[i].dep_list) {
+				item = node_to_item(node, struct SensorRefMap, list);
+				if (item != NULL) {
+					list_remove(&item->list);
+					delete item;
+				}
 			}
 		}
 	}
@@ -474,6 +501,7 @@ int NativeSensorManager::getDataInfo() {
 				virtualSensorList[POCKET])) {
 			addDependency(&context[mSensorCount], sensor_proximity.handle);
 			addDependency(&context[mSensorCount], sensor_light.handle);
+			context[mSensorCount].sensor->stringType = sensorTypeToSensorString(context[mSensorCount].sensor->type);
 			mSensorCount++;
 		}
 	}
@@ -489,6 +517,7 @@ int NativeSensorManager::getDataInfo() {
 					virtualSensorList[ORIENTATION])) {
 			addDependency(&context[mSensorCount], sensor_acc.handle);
 			addDependency(&context[mSensorCount], sensor_mag.handle);
+			context[mSensorCount].sensor->stringType = sensorTypeToSensorString(context[mSensorCount].sensor->type);
 			mSensorCount++;
 		}
 
@@ -499,20 +528,23 @@ int NativeSensorManager::getDataInfo() {
 			 * magnetometer. Some sensor vendors provide such implementations. The pseudo
 			 * gyroscope sensor is low cost but the performance is worse than the actual
 			 * gyroscope. So disable it for the system with actual gyroscope. */
+#ifdef ENABLE_DEPRECATED_VITRUAL_SENSOR
 			if (!initVirtualSensor(&context[mSensorCount], SENSORS_HANDLE(mSensorCount),
 						virtualSensorList[PSEUDO_GYROSCOPE])) {
 				addDependency(&context[mSensorCount], sensor_acc.handle);
 				addDependency(&context[mSensorCount], sensor_mag.handle);
+				context[mSensorCount].sensor->stringType = sensorTypeToSensorString(context[mSensorCount].sensor->type);
 				mSensorCount++;
 			}
-
+#endif
 			compositeVirtualSensorName(sensor_mag.name, virtualSensorName[LINEAR_ACCELERATION], SENSOR_TYPE_LINEAR_ACCELERATION);
-			ALOGD("liear acceleration virtual sensor name changed to %s\n", virtualSensorName[ORIENTATION]);
+			ALOGD("liear acceleration virtual sensor name changed to %s\n", virtualSensorName[LINEAR_ACCELERATION]);
 			/* For linear acceleration */
 			if (!initVirtualSensor(&context[mSensorCount], SENSORS_HANDLE(mSensorCount),
 						virtualSensorList[LINEAR_ACCELERATION])) {
 				addDependency(&context[mSensorCount], sensor_acc.handle);
 				addDependency(&context[mSensorCount], sensor_mag.handle);
+				context[mSensorCount].sensor->stringType = sensorTypeToSensorString(context[mSensorCount].sensor->type);
 				mSensorCount++;
 			}
 
@@ -523,6 +555,7 @@ int NativeSensorManager::getDataInfo() {
 						virtualSensorList[ROTATION_VECTOR])) {
 				addDependency(&context[mSensorCount], sensor_acc.handle);
 				addDependency(&context[mSensorCount], sensor_mag.handle);
+				context[mSensorCount].sensor->stringType = sensorTypeToSensorString(context[mSensorCount].sensor->type);
 				mSensorCount++;
 			}
 
@@ -533,6 +566,7 @@ int NativeSensorManager::getDataInfo() {
 						virtualSensorList[GRAVITY])) {
 				addDependency(&context[mSensorCount], sensor_acc.handle);
 				addDependency(&context[mSensorCount], sensor_mag.handle);
+				context[mSensorCount].sensor->stringType = sensorTypeToSensorString(context[mSensorCount].sensor->type);
 				mSensorCount++;
 			}
 		}
@@ -545,6 +579,7 @@ int NativeSensorManager::getDataInfo() {
 		if (!initVirtualSensor(&context[mSensorCount], SENSORS_HANDLE(mSensorCount),
 					sensor_mag)) {
 			addDependency(&context[mSensorCount], sensor_mag.handle);
+			context[mSensorCount].sensor->stringType = sensorTypeToSensorString(SENSOR_TYPE_MAGNETIC_FIELD_UNCALIBRATED);
 			mSensorCount++;
 		}
 	}
@@ -554,6 +589,18 @@ int NativeSensorManager::getDataInfo() {
 		if (!initVirtualSensor(&context[mSensorCount], SENSORS_HANDLE(mSensorCount),
 					sensor_gyro)) {
 			addDependency(&context[mSensorCount], sensor_gyro.handle);
+			context[mSensorCount].sensor->stringType = sensorTypeToSensorString(SENSOR_TYPE_GYROSCOPE_UNCALIBRATED);
+			mSensorCount++;
+		}
+	}
+
+	if (has_acc && has_gyro) {
+		/* For game rotation vector */
+		if (!initVirtualSensor(&context[mSensorCount], SENSORS_HANDLE(mSensorCount),
+					virtualSensorList[GAME_ROTATION_VECTOR])) {
+			addDependency(&context[mSensorCount], sensor_acc.handle);
+			addDependency(&context[mSensorCount], sensor_gyro.handle);
+			context[mSensorCount].sensor->stringType = sensorTypeToSensorString(context[mSensorCount].sensor->type);
 			mSensorCount++;
 		}
 	}
@@ -739,14 +786,15 @@ int NativeSensorManager::getEventPath(const char *sysfs_path, char *event_path)
 	int len;
 	char *needle;
 
+	if ((sysfs_path == NULL) || (event_path == NULL)) {
+		ALOGE("invalid NULL argument.");
+		return -EINVAL;
+	}
+
 	dir = opendir(sysfs_path);
 	if (dir == NULL) {
 		ALOGE("open %s failed.(%s)\n", strerror(errno));
 		return -1;
-	}
-	if ((sysfs_path == NULL) || (event_path == NULL)) {
-		ALOGE("invalid NULL argument.");
-		return -EINVAL;
 	}
 
 	len = readlink(sysfs_path, symlink, PATH_MAX);
@@ -805,7 +853,7 @@ int NativeSensorManager::getSensorListInner()
 		return 0;
 	}
 	strlcpy(devname, dirname, PATH_MAX);
-	filename = devname + strlen(devname);
+	filename = devname + strlen(dirname);
 
 	while ((de = readdir(dir))) {
 		if(de->d_name[0] == '.' &&
@@ -842,6 +890,7 @@ int NativeSensorManager::getSensorListInner()
 			list->sensor->maxDelay = list->sensor->maxDelay * 1000; /* milliseconds to microseconds */
 #endif
 		list->sensor->handle = SENSORS_HANDLE(number);
+		list->sensor->stringType = sensorTypeToSensorString(list->sensor->type);
 
 		strlcpy(nodename, "", SYSFS_MAXLEN);
 		strlcpy(list->enable_path, devname, PATH_MAX);
@@ -849,8 +898,8 @@ int NativeSensorManager::getSensorListInner()
 		/* initialize data path */
 		strlcpy(nodename, "device", SYSFS_MAXLEN);
 
-		if (getEventPath(devname, list->data_path) == -ENODEV) {
-			getEventPathOld(list, list->data_path);
+		if (getEventPathOld(list, list->data_path)) {
+                        getEventPath(devname, list->data_path);
 		}
 
 		number++;
@@ -879,6 +928,10 @@ int NativeSensorManager::activate(int handle, int enable)
 
 	list->enable = enable;
 
+	/* one shot sensors don't act as base sensors */
+	if (list->sensor->flags & SENSOR_FLAG_ONE_SHOT_MODE)
+		return list->driver->enable(handle, enable);
+
 	/* Search for the background sensor for the sensor specified by handle. */
 	list_for_each(node, &list->dep_list) {
 		item = node_to_item(node, struct SensorRefMap, list);
@@ -889,13 +942,13 @@ int NativeSensorManager::activate(int handle, int enable)
 			/* HAL 1.3 already set listener's delay and latency
 			 * Sync it right now to make it take effect.
 			 */
-			syncDelay(item->ctx->sensor->handle);
 			syncLatency(item->ctx->sensor->handle);
 #endif
 
 			/* Enable the background sensor and register a listener on it. */
 			ALOGD("%s calling driver enable", item->ctx->sensor->name);
 			item->ctx->driver->enable(item->ctx->sensor->handle, 1);
+			syncDelay(item->ctx->sensor->handle);
 
 		} else {
 			/* The background sensor has other listeners, we need
@@ -1030,6 +1083,10 @@ int NativeSensorManager::setDelay(int handle, int64_t ns)
 		return -EINVAL;
 	}
 
+	/* ignore setDelay call for one-shot sensors */
+	if (list->sensor->flags & SENSOR_FLAG_ONE_SHOT_MODE)
+		return 0;
+
 	if (ns < list->sensor->minDelay * 1000) {
 		ALOGW("%s delay is less than minDelay. Cast it to minDelay", list->sensor->name);
 		list->delay_ns = list->sensor->minDelay * 1000;
@@ -1098,6 +1155,10 @@ int NativeSensorManager::batch(int handle, int64_t sample_ns, int64_t latency_ns
 		return -EINVAL;
 	}
 
+	/* ignore batch call for one-shot sensors */
+	if (list->sensor->flags & SENSOR_FLAG_ONE_SHOT_MODE)
+		return 0;
+
 	/* *sample_ns* is the same as *ns* passed to setDelay */
 	list->delay_ns = sample_ns;
 	list->latency_ns = latency_ns;
@@ -1119,21 +1180,16 @@ int NativeSensorManager::flush(int handle)
 	struct SensorRefMap *item;
 	struct listnode *node;
 
-	ALOGD("flush called\n", handle);
+	ALOGD("flush called:%d\n", handle);
 	list = getInfoByHandle(handle);
 	if (list == NULL) {
 		ALOGE("Invalid handle(%d)", handle);
 		return -EINVAL;
 	}
 
-	list_for_each(node, &list->dep_list) {
-		item = node_to_item(node, struct SensorRefMap, list);
-		ret = item->ctx->driver->flush(item->ctx->sensor->handle);
-		if (ret) {
-			ALOGE("Calling flush failed(%d)", ret);
-			return ret;
-		}
-	}
+	/* one shot sensors should return -EINVAL */
+	if (list->sensor->flags & SENSOR_FLAG_ONE_SHOT_MODE)
+		return -EINVAL;
 
 	/* calling flush for virtual sensor */
 	if (list->is_virtual) {
@@ -1142,6 +1198,17 @@ int NativeSensorManager::flush(int handle)
 			ALOGE("Calling flush failed(%d)", ret);
 			return ret;
 		}
+
+	} else {
+		list_for_each(node, &list->dep_list) {
+			item = node_to_item(node, struct SensorRefMap, list);
+			ret = item->ctx->driver->flush(item->ctx->sensor->handle);
+			if (ret) {
+				ALOGE("Calling flush failed(%d)", ret);
+				return ret;
+			}
+		}
+
 	}
 
 	return 0;
